@@ -1,0 +1,877 @@
+HB_DJNG_ATPFromProxyInExit
+
+1	Documentation
+
+   
+2	Exit called
+In include call class zcl_pp02_atp( ).
+*&---------------------------------------------------------------------*
+*& Include          ZXATPU02
+*&---------------------------------------------------------------------*
+*"----------------------------------------------------------------------
+*"*"Lokale Schnittstelle:
+*"  TABLES
+*"      T_ATPCSX STRUCTURE  ATPCS
+*"      T_MDVEX STRUCTURE  MDVE
+*"  CHANGING
+*"     REFERENCE(P_ATPCC) TYPE  ATPCC OPTIONAL
+*"----------------------------------------------------------------------
+  DATA(lo_atp) = NEW zcl_pp02_atp( ).
+  IF sy-tcode(2) = 'VA'. "only in sales order
+    LOOP AT t_atpcsx INTO DATA(ls_atpcsx).
+
+      CASE ls_atpcsx-prreg.
+        WHEN 'A'.
+          "Update ATP structure with information of Blocks
+          lo_atp->set_atp_block( EXPORTING  is_atpcs  = ls_atpcsx
+                                            it_mdvex  = t_mdvex[] ).
+          "Remove lines for the current sales order line
+          DELETE t_mdvex[] WHERE bdcnt = ls_atpcsx-xline.
+          "Append new ATP structure
+          APPEND LINES OF lo_atp->mt_mdvex TO t_mdvex[].
+          "change ls_atpcsx with changed data
+          ls_atpcsx = lo_atp->ms_atpcsx.
+          MODIFY t_atpcsx FROM ls_atpcsx.
+        WHEN OTHERS.
+          "Do Nothing
+      ENDCASE.
+    ENDLOOP.
+  ENDIF.
+3	Filling of z-table
+Via proxy framework SPROXY
+CLASS ZPI_CL_SI_ATPREQUEST_IA IMPLEMENTATION.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZPI_CL_SI_ATPREQUEST_IA->ZPI_II_SI_ATPREQUEST_IA~SI_ATPREQUEST_IA
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] INPUT                          TYPE        ZPI_MT_ATPREQUEST
+* | [!CX!] ZPI_CX_FMT_ATPREQUEST
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD zpi_ii_si_atprequest_ia~si_atprequest_ia.
+*** **** INSERT IMPLEMENTATION HERE **** ***
+    DATA: ls_msg TYPE bal_s_msg.
+    DATA: ls_fault_data TYPE zpi_exchange_fault_data.
+
+    NEW zcl_pp02_ATP( )->set_ztables( EXPORTING it_blocks      = input-mt_atprequest-blocks
+                                   it_block_grade = input-mt_atprequest-block_grade
+                                   it_block_orders = input-mt_atprequest-block_orders
+                                   IMPORTING es_msg = ls_msg ).
+
+    IF ls_msg-msgty = 'E'.
+      ls_fault_data-fault_text = ls_msg-msgv1.
+      RAISE EXCEPTION TYPE zpi_cx_fmt_atprequest
+        EXPORTING
+          no_retry = abap_true
+          standard = ls_fault_data.
+    ENDIF.
+
+
+  ENDMETHOD.
+ENDCLASS.
+4	Class documentation
+class ZCL_PP02_ATP definition
+  public
+  final
+  create public .
+
+public section.
+
+  data MT_MDVEX type TBL_MDVE .
+  data MS_ATPCSX type ATPCS .
+
+  methods SET_ATP_BLOCK
+    importing
+      !IS_ATPCS type ATPCS
+      !IT_MDVEX type TBL_MDVE .
+  methods SET_ZTABLES
+    importing
+      !IT_BLOCKS type ZPI_DT_ATPREQUEST_BLOCKS_TAB
+      !IT_BLOCK_GRADE type ZPI_DT_ATPREQUEST_BLOCK_GR_TAB
+      !IT_BLOCK_ORDERS type ZPI_DT_ATPREQUEST_BLOCK_OR_TAB
+    exporting
+      !ES_MSG type BAL_S_MSG .
+  PROTECTED SECTION.
+private section.
+
+  data MV_GRADESPEC type ATWRT .
+  data MT_OPEN_BLOCKS type ZTT_OPEN_BLOCK .
+
+  methods SET_PRODUCTIONORDER_DATES
+    importing
+      !IV_AUFNR type AUFNR
+    returning
+      value(RT_ERR) type CHAR1 .
+  methods SET_PRODUCTIONORDER_RELEASE
+    importing
+      !IV_AUFNR type AUFNR
+    returning
+      value(RT_ERR) type CHAR1 .
+  methods GET_PRODUCTION_VERSION
+    importing
+      !IV_LINE type CHAR80
+      !IV_ORDER type AUFNR
+    returning
+      value(RV_PRODVER) type VERID .
+  methods SET_PRODUCTION_ORDERS
+    importing
+      !IS_ORDERS type ZPI_DT_ATPREQUEST_BLOCK_ORDERS .
+  methods SET_CONVERTED_QTY
+    importing
+      !IV_MATNR type MATNR
+      !IV_MEINS type MEINS
+      !IV_MEINS_OUT type MEINS
+      !IV_MENGE type EKPO-MENGE
+    returning
+      value(RE_MENGE) type EKPO-MENGE .
+  methods SET_BLOCK
+    importing
+      !IS_OPEN_BLOCK type ZST_OPEN_BLOCK
+      !IV_WEIGHT type MDVE-MNG01 .
+  methods GET_GRADESPEC .
+  methods GET_OPEN_BLOCKS .
+  methods WRITE_APPLICATIONLOG
+    importing
+      !IS_MSG type BAL_S_MSG
+      !IV_SUBOBJECT type BALSUBOBJ .
+ENDCLASS.
+
+
+
+CLASS ZCL_PP02_ATP IMPLEMENTATION.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->GET_GRADESPEC
+* +-------------------------------------------------------------------------------------------------+
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD get_gradespec.
+*    DATA lv_OBJECT                TYPE kssk-objek.
+*    DATA lc_object_type           TYPE tcla-obtab VALUE 'MARA'.
+*    DATA lc_class_type            TYPE kssk-klart VALUE '001'.
+*    DATA lc_class                 TYPE klah-class VALUE 'Z_SPECIFICATIONS'.
+*    DATA lc_gradespec             TYPE atwrt VALUE 'Z_GRADESPEC'.
+*    DATA lt_object_identification    TYPE STANDARD TABLE OF api_ob_key WITH EMPTY KEY.
+*    DATA lt_charact_values           TYPE STANDARD TABLE OF api_val_r WITH EMPTY KEY .
+*    DATA ls_msg                   TYPE bal_s_msg.
+*
+*    lv_object = ms_atpcsx-matnr.
+*
+*    CALL FUNCTION 'CACL_OBJECT_READ_VALIDATION'
+*      EXPORTING
+*        object                = lv_OBJECt
+*        object_type           = lc_object_type
+*        class_type            = lc_class_type
+*        class                 = lc_class
+*      TABLES
+*        object_identification = lt_object_identification
+*        charact_values        = lt_charact_values
+*      EXCEPTIONS
+*        error                 = 1
+*        warning               = 2
+*        OTHERS                = 3.
+*    IF sy-subrc <> 0.
+*       ls_msg-msgty = 'E'.
+*       ls_msg-msgv1 = 'SY-SUBRC'.
+*       ls_msg-msgv2 = sy-subrc.
+*       ls_msg-msgv3 = 'In function module CACL_OBJECT_READ_VALIDATION'.
+*
+*       me->write_applicationlog( iv_subobject = 'Z02'
+*                                 is_msg = ls_msg ).
+*    ELSE.
+*      READ TABLE lt_charact_values INTO DATA(ls_value) WITH KEY charact = lc_gradespec.
+*      IF sy-subrc = 0.
+*        mv_gradespec = ls_value-value.
+*      ENDIF.
+*    ENDIF.
+
+*    SELECT SINGLE matkl FROM mara
+*      WHERE matnr = @ms_atpcsx-matnr
+*      INTO @mv_gradespec.
+
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->GET_OPEN_BLOCKS
+* +-------------------------------------------------------------------------------------------------+
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD get_open_blocks.
+
+*
+    "Get Blocks with correct determination
+    CLEAR mt_open_blocks.
+
+    SELECT a~zzblock, a~zzweight, a~zzstartdate, a~zzenddate
+        FROM  zdb_blocks AS a
+        INNER JOIN zdb_block_grade AS b ON a~zzblock   = b~zzblock
+        INTO CORRESPONDING FIELDS OF TABLE @mt_open_blocks
+       WHERE b~zzgradespec = @mv_gradespec
+         AND a~zzenddate GE @sy-datum
+         AND a~zzweight GT 0.
+
+    SORT mt_open_blocks BY zzenddate ASCENDING.
+
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->GET_PRODUCTION_VERSION
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_LINE                        TYPE        CHAR80
+* | [--->] IV_ORDER                       TYPE        AUFNR
+* | [<-()] RV_PRODVER                     TYPE        VERID
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD get_production_version.
+    CONCATENATE 'PM' iv_line+1 INTO DATA(lv_arbpl).
+    SELECT objid FROM crhd INTO @DATA(lv_objid) UP TO 1 ROWS
+ WHERE arbpl = @lv_arbpl AND werks = 'NLDH'
+ ORDER BY PRIMARY KEY .
+    ENDSELECT.
+
+    SELECT SINGLE plnnr, plnal FROM afko
+        INTO ( @DATA(lv_ord_plnnr), @DATA(lv_ord_plnal) )
+        WHERE aufnr = @iv_order.
+
+    SELECT matnr FROM afpo
+ INTO @DATA(lv_matnr) UP TO 1 ROWS WHERE aufnr = @iv_order
+ ORDER BY PRIMARY KEY .
+    ENDSELECT.
+
+    SELECT SINGLE m~plnnr, k~plnal FROM mapl AS m
+      INNER JOIN plko AS k ON
+           m~plnnr = k~plnnr AND
+           m~plnty = k~plnty AND
+           m~plnal = k~plnal
+      INNER JOIN plpo AS p ON
+           m~plnnr = p~plnnr AND
+           m~werks = 'NLDH'  AND
+           m~matnr = @lv_matnr AND
+           m~plnty = 'N' AND
+           m~plnal = k~plnal AND
+           k~zaehl = p~zaehl AND
+           p~arbid = @lv_objid
+      INTO ( @DATA(lv_mbs_plnnr), @DATA(lv_mbs_plnal) ).
+
+    IF lv_mbs_plnnr = lv_ord_plnnr OR
+       lv_mbs_plnal = lv_ord_plnal.
+      "CHANGE PRODUCTION VERSION) > get PV
+      SELECT verid FROM mkal
+        WHERE matnr = @lv_matnr
+          AND werks = 'NLDH'
+          AND plnty = 'N'
+          AND plnnr = @lv_mbs_plnnr
+          AND alnal = @lv_mbs_plnal
+          ORDER BY PRIMARY KEY
+           INTO @rv_prodver. "get prodversion.
+      ENDSELECT.
+    ENDIF.
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PP02_ATP->SET_ATP_BLOCK
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IS_ATPCS                       TYPE        ATPCS
+* | [--->] IT_MDVEX                       TYPE        TBL_MDVE
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD set_atp_block.
+
+    DATA: lv_open_weight  TYPE mdve-mng01,
+          lv_required_qty TYPE mdve-mng01.
+    FIELD-SYMBOLS: <fs_lifsk> TYPE lifsk.
+
+    me->mt_mdvex = it_mdvex.
+    ms_atpcsx = is_atpcs.
+
+    ASSIGN ('(SAPMV45A)VBAK-LIFSK') TO <fs_lifsk>.
+    IF <fs_lifsk> IS ASSIGNED.
+      DATA(lv_delblock) = <fs_lifsk>.
+    ENDIF.
+
+    "only use rows for correct sales order item
+    DELETE me->mt_mdvex WHERE bdcnt NE is_atpcs-xline.
+    IF lines( me->mt_mdvex ) = 0.
+      RETURN.
+    ENDIF.
+
+    "Check if quantity is already confirmed for the correct date
+    READ TABLE me->mt_mdvex INTO DATA(ls_mdvex) INDEX 1.
+
+    IF NOT ( ls_mdvex-mng02 LT ls_mdvex-mng01  OR sy-subrc NE 0 )  AND is_atpcs-fixmg IS INITIAL AND lv_delblock IS INITIAL.
+      RETURN.
+    ENDIF.
+
+    SELECT SINGLE matkl FROM mara
+      WHERE matnr = @is_atpcs-matnr
+      INTO @mv_gradespec.
+
+    IF sy-subrc NE 0.
+      RETURN.
+    ENDIF.
+
+*DELETE lt_open_blocks FROM 1 TO lines( lt_open_blocks ).
+* select all planned production
+    SELECT a~zzblock, a~zzweight, a~zzstartdate, a~zzenddate, b~zzgradespec, SUM( d~gamng ) AS zzprod_qty
+      FROM  zdb_blocks AS a
+        INNER JOIN zdb_block_grade AS b
+              ON a~zzblock   = b~zzblock
+        LEFT OUTER JOIN zdb_block_orders AS c
+              ON a~zzblock = c~zzblock
+*        INNER  JOIN afko AS d
+        LEFT OUTER JOIN afko AS d
+              ON c~zzorder = d~aufnr
+       WHERE b~zzgradespec = @mv_gradespec
+         AND a~zzenddate GE  @sy-datum "@is_atpcs-bdter
+         AND a~zzfixed IS INITIAL
+         AND a~zzweight GT 0
+         GROUP BY a~zzblock, a~zzweight, a~zzstartdate , a~zzenddate, b~zzgradespec
+        ORDER BY a~zzenddate ASCENDING
+         INTO TABLE @DATA(lt_open_blocks).
+
+* Get last block before bdter
+    DATA(lt_block_before_load) = lt_open_blocks.
+    DELETE lt_block_before_load WHERE zzenddate > is_atpcs-bdter.
+    IF lt_block_before_load IS NOT INITIAL.
+      SORT lt_block_before_load DESCENDING BY zzenddate.
+      DATA(lv_first_block_date) = lt_block_before_load[ 1 ]-zzenddate.
+    ENDIF.
+
+* get all sales requirements
+    SELECT vbep~vbeln, vbep~posnr, vbep~mbdat, vbap~matnr, mara~matkl, lmeng, vbep~meins
+      FROM vbep
+      INNER JOIN vbap ON ( vbep~vbeln = vbap~vbeln )
+                      AND ( vbep~posnr = vbap~posnr )
+      INNER JOIN mara ON ( mara~matnr = vbap~matnr )
+      WHERE mara~matkl = @mv_gradespec
+*      and mbdat LE @lv_lt_date
+*      AND mbdat GT @lv_ge_date
+      AND lmeng GT 0
+      AND ocdqty_bu GT 0
+*      AND vbap~matnr = @lt_materials_in_grade-matnr
+      INTO TABLE @DATA(lt_schedule_lines).
+
+    DATA(lv_index) = 0.
+
+    DATA(lv_qty_blocks) = lines( lt_open_blocks ).
+
+    LOOP AT lt_open_blocks INTO DATA(ls_open_block) ##INTO_OK.
+
+      IF ls_open_block-zzenddate < lv_first_block_date.
+        CONTINUE.
+      ELSEIF ls_open_block-zzenddate = lv_first_block_date.
+        ls_open_block-zzenddate = is_atpcs-bdter.
+      ENDIF.
+
+      lv_index = lv_index + 1.
+
+      "get the next block
+      READ TABLE me->mt_open_blocks INTO DATA(ls_next_block) INDEX lv_index + 1.
+
+      DATA(lv_sales_req) = REDUCE lmeng( INIT lv_qty = 0
+                                          FOR ls_lines IN lt_schedule_lines
+                                                    WHERE ( ( matkl = ls_open_block-zzgradespec )
+                                                    AND ( mbdat LE COND #( WHEN lv_index = 1
+                                                                           THEN ls_open_block-zzenddate
+                                                                           WHEN lv_index = lv_qty_blocks
+                                                                           THEN '99991231'
+                                                                           WHEN lv_index > 1 AND lv_index NE lv_qty_blocks
+                                                                           THEN ls_next_block-zzenddate ) )
+                                                    AND ( mbdat GT COND #( WHEN lv_index = 1
+                                                                           THEN sy-datum
+                                                                           WHEN lv_index = lv_qty_blocks
+                                                                           THEN ls_open_block-zzenddate
+                                                                           WHEN lv_index > 1 AND lv_index NE lv_qty_blocks
+                                                                           THEN ls_open_block-zzenddate ) ) )
+                                                   NEXT lv_qty = lv_qty + ls_lines-lmeng ).
+      CLEAR ls_next_block.
+
+*      Get the open weight on the block
+      lv_open_weight = COND #( WHEN ls_open_block-zzprod_qty > lv_sales_req
+                                  THEN ls_open_block-zzweight - ls_open_block-zzprod_qty
+                               WHEN lv_sales_req GE ls_open_block-zzprod_qty
+                                  THEN ls_open_block-zzweight - lv_sales_req ).
+
+
+      CHECK lv_open_weight GE 0.
+
+      "get the required qty in total
+      lv_required_qty = ls_mdvex-mng01 - ls_mdvex-mng02.
+
+      "convert that required qty to weight in KG
+      DATA(lv_required_weight) = set_converted_qty( EXPORTING iv_matnr = ms_atpcsx-matnr
+                                                              iv_meins = ms_atpcsx-meins
+                                                              iv_meins_out = 'KG'
+                                                              iv_menge = lv_required_qty ).
+
+
+      "if the required qty fits on the block, then add only 1 line with open block qty and exit the enhancement.
+      DATA(ls_block) = VALUE zst_open_block( ).
+      MOVE-CORRESPONDING ls_open_block TO ls_block.
+
+      IF lv_required_weight LE lv_open_weight.
+
+        me->set_block( EXPORTING is_open_block = ls_block
+                                 iv_weight     = lv_open_weight ).
+
+        EXIT.
+
+      ELSE. "if the required qty does not fit in 1 block, check the next block as well.
+        DATA(lv_add_weight) = set_converted_qty( EXPORTING iv_matnr = ms_atpcsx-matnr
+                                                           iv_meins = 'KG'
+                                                           iv_meins_out = ms_atpcsx-meins
+                                                           iv_menge = lv_open_weight ).
+
+        me->set_block( EXPORTING is_open_block = ls_block
+                                 iv_weight     = lv_add_weight ).
+
+        "required weight for next blocks deducted with quantity from current block.
+        ls_mdvex-mng01 = ls_mdvex-mng01 - lv_add_weight.
+
+      ENDIF.
+
+    ENDLOOP.
+
+    "fix lines if no atp check can be done
+
+    IF ( lines( mt_mdvex ) = 1 AND mt_mdvex[ 1 ]-mng02 = 0 ) OR lv_delblock IS NOT INITIAL.
+      ms_atpcsx-fixmg = 'X'.
+    ELSE.
+      CLEAR ms_atpcsx-fixmg.
+    ENDIF.
+
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->SET_BLOCK
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IS_OPEN_BLOCK                  TYPE        ZST_OPEN_BLOCK
+* | [--->] IV_WEIGHT                      TYPE        MDVE-MNG01
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD set_block.
+
+    DATA: lv_temp     TYPE mdve-mng01,
+          lv_total    TYPE mdve-mng01,
+          lv_required TYPE mdve-mng01.
+
+    "Check if line with same date already exists, if so, modify the qty
+    LOOP AT mt_mdvex INTO DATA(ls_mdvex) WHERE dat01 = is_open_block-zzenddate .
+      lv_required = ls_mdvex-mng01.
+      ls_mdvex-mng02 = ls_mdvex-mng02 + iv_weight.
+      MODIFY mt_mdvex FROM ls_mdvex.
+    ENDLOOP.
+
+    IF sy-subrc NE 0.
+      "if not exists, add the line
+      READ TABLE mt_mdvex INTO ls_mdvex INDEX 1.
+      IF sy-subrc = 0.
+        "Assign quantity
+        lv_required = ls_mdvex-mng01.
+        ls_mdvex-mng02 = iv_weight.
+        ls_mdvex-dat01 = is_open_block-zzenddate.
+        APPEND ls_mdvex TO mt_mdvex.
+      ENDIF.
+    ENDIF.
+
+    "When adding the line it could be that total of atp lines is more than the required qty. this is solved by
+    " sorting the table decending, saving the total, comparing that to the required and
+    " subtracting the lines or quantities that are too much
+
+    SORT mt_mdvex DESCENDING BY dat01.
+
+    LOOP AT mt_mdvex INTO ls_mdvex.
+      lv_total = lv_total + ls_mdvex-mng02.
+    ENDLOOP.
+
+    IF lv_total GT lv_required.
+
+      lv_temp = lv_total - lv_required.
+
+      LOOP AT mt_mdvex INTO ls_mdvex.
+        ls_mdvex-mng02 = ls_mdvex-mng02 - lv_temp.
+        IF ls_mdvex-mng02 LE 0 AND lines( mt_mdvex ) GT 1 .
+          lv_temp = ls_mdvex-mng02 * -1.
+          DELETE TABLE mt_mdvex FROM ls_mdvex.
+        ELSE.
+          IF ls_mdvex-dat01 < ls_mdvex-dat00.
+            ls_mdvex-dat01 = ls_mdvex-dat00.
+          ENDIF.
+          MODIFY mt_mdvex FROM ls_mdvex.
+          EXIT.
+        ENDIF.
+      ENDLOOP.
+
+    ENDIF.
+    "sort again ascending to keep the ATP logic
+    SORT mt_mdvex ASCENDING BY dat01.
+
+
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->SET_CONVERTED_QTY
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_MATNR                       TYPE        MATNR
+* | [--->] IV_MEINS                       TYPE        MEINS
+* | [--->] IV_MEINS_OUT                   TYPE        MEINS
+* | [--->] IV_MENGE                       TYPE        EKPO-MENGE
+* | [<-()] RE_MENGE                       TYPE        EKPO-MENGE
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD set_converted_qty.
+
+    DATA ls_msg TYPE bal_s_msg.
+
+    CALL FUNCTION 'MD_CONVERT_MATERIAL_UNIT'
+      EXPORTING
+        i_matnr              = iv_matnr
+        i_in_me              = iv_meins
+        i_out_me             = iv_meins_out
+        i_menge              = iv_menge
+      IMPORTING
+        e_menge              = re_menge
+      EXCEPTIONS
+        error_in_application = 1
+        error                = 2
+        OTHERS               = 3.
+
+    IF sy-subrc <> 0.
+      ls_msg-msgty = 'E'.
+      ls_msg-msgv1 = 'SY-SUBRC'.
+      ls_msg-msgv2 = sy-subrc.
+      ls_msg-msgv3 = 'MD_CONVERT_MATERIAL_UNIT'.
+
+      me->write_applicationlog( iv_subobject = 'Z02'
+                                is_msg = ls_msg ).
+    ENDIF.
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->SET_PRODUCTIONORDER_DATES
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_AUFNR                       TYPE        AUFNR
+* | [<-()] RT_ERR                         TYPE        CHAR1
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD set_productionorder_dates.
+    DATA: ls_orderdata  TYPE  bapi_pp_order_change,
+          ls_orderdatax TYPE  bapi_pp_order_changex,
+          ls_return     TYPE  bapiret2.
+    WAIT UP TO 1 SECONDS.
+    SELECT zzblock FROM zdb_block_orders WHERE zzorder = @iv_aufnr
+      INTO TABLE @DATA(lt_blocks).
+
+    SELECT zzstartdate, zzstarttime, zzenddate, zzendtime, zzline FROM zdb_blocks
+      FOR ALL ENTRIES IN @lt_blocks
+      WHERE zzblock = @lt_blocks-zzblock
+      INTO TABLE @DATA(lt_block_time).
+
+    CHECK sy-subrc = 0.
+
+    DATA(lv_line) = lt_block_time[ 1 ]-zzline.
+
+    DATA(lv_verid) = get_production_version( EXPORTING  iv_order = iv_aufnr
+                                                        iv_line = lv_line ).
+    CLEAR: ls_return.
+    SORT lt_block_time BY zzstartdate ASCENDING.
+    DATA(lv_startdate) = lt_block_time[ 1 ]-zzstartdate.
+    DATA(lv_starttime) = lt_block_time[ 1 ]-zzstarttime.
+    SORT lt_block_time BY zzenddate DESCENDING.
+    DATA(lv_enddate) = lt_block_time[ 1 ]-zzenddate.
+    DATA(lv_endtime) = lt_block_time[ 1 ]-zzendtime.
+    IF lv_verid IS NOT INITIAL.
+      ls_orderdata-prod_version = lv_verid.
+      ls_orderdatax-prod_version = 'X'.
+    ENDIF.
+    ls_orderdata-explosion_date = syst-datum.
+    ls_orderdatax-prod_version = 'X'.
+    ls_orderdata-basic_end_date = lv_enddate.
+    ls_orderdatax-basic_end_date = 'X'.
+*    ls_orderdata-basic_end_time = lv_endtime.
+    ls_orderdata-basic_start_date = lv_startdate.
+    ls_orderdatax-basic_start_date = 'X'.
+*    ls_orderdata-basic_start_time = lv_starttime.
+
+
+    CALL FUNCTION 'BAPI_PRODORD_CHANGE'
+      EXPORTING
+        number        = iv_aufnr
+        orderdata     = ls_orderdata
+        orderdatax    = ls_orderdatax
+      IMPORTING
+        return        = ls_return
+      EXCEPTIONS
+        error_message = 98
+        OTHERS        = 99.
+
+    IF  sy-subrc EQ 0 AND (
+        ls_return-type EQ 'S' OR
+        ls_return-type EQ 'W' OR
+        ls_return-type IS INITIAL ).
+
+      COMMIT WORK AND WAIT.
+      CLEAR: ls_return.
+      rt_err = 'C'.
+    ELSE.
+      ROLLBACK WORK.
+      rt_err = 'A'.
+    ENDIF.
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->SET_PRODUCTIONORDER_RELEASE
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_AUFNR                       TYPE        AUFNR
+* | [<-()] RT_ERR                         TYPE        CHAR1
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD set_productionorder_release.
+    DATA: lt_order  TYPE TABLE OF bapi_order_key,
+          ls_return TYPE  bapiret2,
+          lt_return TYPE STANDARD TABLE OF bapi_order_return.
+    lt_order = VALUE #( ( order_number = iv_aufnr ) ).
+    CALL FUNCTION 'BAPI_PRODORD_RELEASE'
+      IMPORTING
+        return        = ls_return
+      TABLES
+        detail_return = lt_return
+        orders        = lt_order.
+    IF line_exists( lt_return[ type = 'E' ] ).
+      ROLLBACK WORK.
+      rt_err = 'B'.
+    ELSE.
+      COMMIT WORK AND WAIT.
+      rt_err = 'C'.
+    ENDIF.
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->SET_PRODUCTION_ORDERS
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IS_ORDERS                      TYPE        ZPI_DT_ATPREQUEST_BLOCK_ORDERS
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD set_production_orders.
+
+    DATA: lt_order     TYPE TABLE OF bapi_order_key,
+          ls_return    TYPE  bapiret2,
+          lv_aufnr     TYPE aufnr,
+          ls_msg       TYPE bal_s_msg,
+          lc_subobject TYPE balsubobj VALUE 'Z01'.
+
+    "check alle orders op die block
+    lv_aufnr = |{ is_orders-zzorder ALPHA = IN }|.
+
+    DATA(err_msg) = set_productionorder_dates( lv_aufnr ).
+
+*    IF err_msg NE 'A'.
+*      err_msg = set_productionorder_release( lv_aufnr ).
+*    ENDIF.
+
+    CASE err_msg.
+      WHEN 'A'.
+        ls_msg-msgty = 'E'.
+        ls_msg-msgv1 = |Order { is_orders-zzorder } not updated|.
+        me->write_applicationlog( iv_subobject = lc_subobject
+                                  is_msg  = ls_msg ).
+      WHEN 'B'.
+        ls_msg-msgty = 'E'.
+        ls_msg-msgv1 = |order { lv_aufnr } not released|.
+        me->write_applicationlog( iv_subobject = lc_subobject
+                                  is_msg = ls_msg ).
+      WHEN 'C'.
+        ls_msg-msgty = 'I'.
+        ls_msg-msgv1 = |Order { is_orders-zzorder } updated|.
+        me->write_applicationlog( iv_subobject = lc_subobject
+                                  is_msg = ls_msg ).
+    ENDCASE.
+
+
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_PP02_ATP->SET_ZTABLES
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IT_BLOCKS                      TYPE        ZPI_DT_ATPREQUEST_BLOCKS_TAB
+* | [--->] IT_BLOCK_GRADE                 TYPE        ZPI_DT_ATPREQUEST_BLOCK_GR_TAB
+* | [--->] IT_BLOCK_ORDERS                TYPE        ZPI_DT_ATPREQUEST_BLOCK_OR_TAB
+* | [<---] ES_MSG                         TYPE        BAL_S_MSG
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD set_ztables.
+
+    DATA :lx_root      TYPE REF TO cx_root,
+          err_msg      TYPE char1,
+          ls_msg       TYPE bal_s_msg,
+          lc_subobject TYPE balsubobj VALUE 'Z01'.
+
+    DATA ls_block TYPE zdb_blocks.
+    data lt_block_temp type table of zdb_blocks.
+    DATA ls_block_grade TYPE zdb_block_grade.
+    DATA ls_block_orders TYPE zdb_block_orders.
+
+    move-corresponding it_blocks to lt_block_temp.
+    SELECT * FROM zdb_blocks FOR ALL ENTRIES IN @lt_block_temp
+      WHERE zzblock = @lt_block_temp-zzblock
+      AND zzfixed = 'X'
+      INTO TABLE @DATA(lt_fix_blocks).
+
+    "Update tables in SAP
+    LOOP AT it_blocks INTO DATA(ls_block_proxy).
+      MOVE-CORRESPONDING ls_block_proxy TO ls_block.
+      ls_block-zzstarttime = ls_block_proxy-zzstartdate+8(6).
+      ls_block-zzendtime = ls_block_proxy-ZZendDATE+8(6).
+      if line_exists( lt_fix_blocks[ zzblock = ls_block_proxy-zzblock ] ).
+        ls_block-zzfixed = 'X'.
+      else.
+        clear ls_block-zzfixed.
+      endif.
+      TRY.
+          "First delete the existing block from the tables to make sure information in tables is correct
+          DELETE FROM zdb_blocks WHERE zzblock = ls_block-zzblock.
+          DELETE FROM zdb_block_orders WHERE zzblock = ls_block-zzblock.
+          DELETE FROM zdb_block_grade WHERE zzblock = ls_block-zzblock.
+          MODIFY zdb_blocks FROM ls_block.
+        CATCH cx_root INTO lx_root.
+          err_msg = 'X'.
+          "IF table cannot be update update application log
+          CLEAR ls_msg.
+          ls_msg-msgv1  = lx_root->get_text( ).
+          ls_msg-msgty = 'E'.
+          me->write_applicationlog( iv_subobject = lc_subobject
+                                    is_msg       = ls_msg ).
+      ENDTRY.
+    ENDLOOP.
+
+    LOOP AT it_block_grade INTO DATA(ls_block_grade_proxy).
+      MOVE-CORRESPONDING ls_block_grade_proxy TO ls_block_grade.
+      TRY.
+          MODIFY zdb_block_grade FROM ls_block_grade.
+        CATCH cx_root INTO lx_root.
+          "IF table cannot be update update application log
+          CLEAR ls_msg.
+          err_msg = 'X'.
+          ls_msg-msgv1 = lx_root->get_text( ).
+          ls_msg-msgty = 'E'.
+          me->write_applicationlog( iv_subobject = lc_subobject
+                                    is_msg       = ls_msg ).
+      ENDTRY.
+    ENDLOOP.
+
+    LOOP AT it_block_orders INTO DATA(ls_block_orders_proxy).
+      MOVE-CORRESPONDING ls_block_orders_proxy TO ls_block_orders.
+      TRY.
+          ls_block_orders-zzorder = |{ ls_block_orders-zzorder ALPHA = IN }|.
+          MODIFY zdb_block_orders FROM ls_block_orders.
+        CATCH cx_root INTO lx_root.
+          "If table cannot be updated update application log
+          CLEAR: ls_msg.
+          err_msg = 'X'.
+          ls_msg-msgv1 = lx_root->get_text( ).
+          ls_msg-msgty = 'E'.
+          me->write_applicationlog( iv_subobject = lc_subobject
+                                    is_msg       = ls_msg ).
+      ENDTRY.
+    ENDLOOP.
+
+    IF err_msg IS INITIAL.
+      COMMIT WORK.
+      CLEAR ls_msg.
+      ls_msg-msgty = 'I'.
+      ls_msg-msgv1 = 'Tables updated'.
+      me->write_applicationlog( iv_subobject = lc_subobject
+                                is_msg       = ls_msg ).
+      "update the dates from the production orders.
+      DATA(lt_block_orders) = it_block_orders.
+      SORT lt_block_orders BY zzorder.
+      DELETE ADJACENT DUPLICATES FROM lt_block_orders COMPARING zzorder.
+      LOOP AT lt_block_orders INTO ls_block_orders_proxy.
+        set_production_orders( ls_block_orders_proxy ).
+      ENDLOOP.
+
+    ELSE.
+      ROLLBACK WORK.
+      CLEAR ls_msg.
+      ls_msg-msgty = 'E'.
+      ls_msg-msgv1 = 'Tables not updated'.
+      me->write_applicationlog( iv_subobject = lc_subobject
+                                is_msg       = ls_msg ).
+      es_msg = ls_msg.
+    ENDIF.
+
+
+
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_PP02_ATP->WRITE_APPLICATIONLOG
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IS_MSG                         TYPE        BAL_S_MSG
+* | [--->] IV_SUBOBJECT                   TYPE        BALSUBOBJ
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD write_applicationlog.
+
+    DATA: lS_LOG        TYPE bal_s_log,
+          ls_LOG_HANDLE TYPE balloghndl,
+          ls_msg        TYPE bal_s_msg.
+
+    ls_log-object = 'ZPP02'.
+    ls_log-subobject = iv_subobject.
+    ls_log-aldate = sy-datum.
+    ls_log-altime = sy-uzeit.
+    ls_log-aluser = sy-uname.
+    ls_log-altcode = sy-tcode.
+    ls_log-alprog = sy-cprog.
+
+    ls_msg = is_msg.
+
+    ls_msg-msgid = '000'.
+    ls_msg-msgno = '038'.
+
+
+    "Write error message to application log
+    CALL FUNCTION 'BAL_LOG_CREATE'
+      EXPORTING
+        i_s_log                 = ls_log
+      IMPORTING
+        e_log_handle            = ls_LOG_HANDLE
+      EXCEPTIONS
+        log_header_inconsistent = 1
+        OTHERS                  = 2.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+    CALL FUNCTION 'BAL_LOG_MSG_ADD'
+      EXPORTING
+        i_log_handle     = ls_LOG_HANDLE
+        i_s_msg          = ls_msg
+      EXCEPTIONS
+        log_not_found    = 1
+        msg_inconsistent = 2
+        log_is_full      = 3
+        OTHERS           = 4.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+    CALL FUNCTION 'BAL_DB_SAVE'
+      EXPORTING
+        i_client         = sy-mandt
+        i_save_all       = 'X'
+      EXCEPTIONS
+        log_not_found    = 1
+        save_not_allowed = 2
+        numbering_error  = 3
+        OTHERS           = 4.
+
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+
+
+  ENDMETHOD.
+ENDCLASS.
